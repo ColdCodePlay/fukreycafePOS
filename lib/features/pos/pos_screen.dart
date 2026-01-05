@@ -78,6 +78,13 @@ class _PosScreenState extends ConsumerState<PosScreen> {
           );
         }
 
+        // Initialize outlet filter for POS history & stats
+        if (profile.outletId != null) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            ref.read(outletFilterProvider.notifier).setFilter(profile.outletId);
+          });
+        }
+
         return Scaffold(
           backgroundColor: const Color(0xFFFDEFE6), 
           appBar: AppBar(
@@ -204,51 +211,60 @@ class _PosScreenState extends ConsumerState<PosScreen> {
   }
 
   Future<void> _showHistoryDialog(BuildContext context) async {
-    final recentOrdersAsync = ref.read(recentOrdersProvider);
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Recent Orders'),
+        title: const Text('Recent Orders (Last 10)', style: TextStyle(fontWeight: FontWeight.bold)),
         content: SizedBox(
           width: double.maxFinite,
-          child: recentOrdersAsync.when(
-            data: (orders) => orders.isEmpty
-                ? const Center(child: Text('No orders'))
-                : ListView.builder(
-                    shrinkWrap: true,
-                    itemCount: orders.length,
-                    itemBuilder: (context, index) {
-                      final o = orders[index];
-                      return ListTile(
-                        title: Text('Order #${o['id'].toString().substring(0, 8)}'),
-                        subtitle: Text('₹${o['total_amount']} | ${o['created_at'].toString().substring(11, 16)}'),
-                        trailing: IconButton(
-                          icon: const Icon(Icons.print_outlined),
-                          onPressed: () {
-                            // Prepare data for PrinterService
-                            final orderData = {
-                              'id': o['id'],
-                              'total': o['total_amount'],
-                              'discount_amount': o['discount_amount'] ?? 0,
-                              'tax_amount': o['tax_amount'] ?? 0,
-                              'items': (o['order_items'] as List? ?? []).map((oi) => {
-                                'name': oi['menu_items']?['name'] ?? 'Unknown',
-                                'quantity': oi['quantity'],
-                                'price': oi['price'],
+          height: 400,
+          child: Consumer(
+            builder: (context, ref, child) {
+              final recentOrdersAsync = ref.watch(filteredOrdersProvider);
+              return recentOrdersAsync.when(
+                data: (orders) => orders.isEmpty 
+                  ? const Center(child: Text('No recent orders'))
+                  : ListView.separated(
+                      shrinkWrap: true,
+                      itemCount: orders.length,
+                      separatorBuilder: (context, index) => const Divider(),
+                      itemBuilder: (context, index) {
+                        final order = orders[index];
+                        final time = DateTime.parse(order['created_at']).toLocal();
+                        return ListTile(
+                          title: Text('Order #${order['id'].toString().substring(0, 8)}'),
+                          subtitle: Text('${time.day}/${time.month} ${time.hour}:${time.minute.toString().padLeft(2, '0')} | ₹${order['total_amount']} | ${order['payment_method']?.toString().toUpperCase() ?? 'CASH'}'),
+                          trailing: const Icon(Icons.print, color: Colors.orange),
+                          onTap: () async {
+                            // Prepare print status
+                            final Map<String, dynamic> orderData = {
+                              'id': order['id'],
+                              'total': order['total_amount'],
+                              'tax_amount': order['tax_amount'] ?? 0,
+                              'discount_amount': order['discount_amount'] ?? 0,
+                              'items': (order['order_items'] as List).map((i) => {
+                                'name': i['menu_items']['name'],
+                                'quantity': i['quantity'],
+                                'price': i['price'],
                               }).toList(),
                             };
-                            ref.read(printerServiceProvider.notifier).printBill(orderData);
-                            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Sent to printer')));
+                            
+                            final printer = ref.read(printerServiceProvider.notifier);
+                            await printer.printBill(orderData);
+                            if (context.mounted) Navigator.pop(context);
                           },
-                        ),
-                      );
-                    },
-                  ),
-            loading: () => const Center(child: CircularProgressIndicator()),
-            error: (e, st) => Text('Error: $e'),
+                        );
+                      },
+                    ),
+                loading: () => const Center(child: CircularProgressIndicator()),
+                error: (e, st) => Center(child: Text('Error: $e')),
+              );
+            },
           ),
         ),
-        actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close'))],
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('CLOSE')),
+        ],
       ),
     );
   }
@@ -436,6 +452,28 @@ class _CartFooterState extends ConsumerState<_CartFooter> {
               activeThumbColor: Colors.orange,
               activeTrackColor: Colors.orange.withValues(alpha: 0.5),
             ),
+            const SizedBox(height: 8),
+            const Text('Payment Mode', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.grey)),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: SegmentedButton<String>(
+                segments: const [
+                  ButtonSegment(value: 'cash', label: Text('Cash'), icon: Icon(Icons.money)),
+                  ButtonSegment(value: 'card', label: Text('Card'), icon: Icon(Icons.credit_card)),
+                  ButtonSegment(value: 'upi', label: Text('UPI'), icon: Icon(Icons.qr_code)),
+                ],
+                selected: {cartState.paymentMethod},
+                onSelectionChanged: (Set<String> newSelection) {
+                  ref.read(cartProvider.notifier).setPaymentMethod(newSelection.first);
+                },
+                style: SegmentedButton.styleFrom(
+                  selectedBackgroundColor: Colors.orange,
+                  selectedForegroundColor: Colors.white,
+                  visualDensity: VisualDensity.compact,
+                ),
+              ),
+            ),
             const Divider(),
             _TotalRow(label: 'Subtotal', value: '₹${cartState.subtotal.toStringAsFixed(2)}'),
             if (cartState.discountAmount > 0)
@@ -589,6 +627,7 @@ Future<void> _handleCheckout(BuildContext context, WidgetRef ref, CartState cart
       'total': cartState.total,
       'discount_amount': cartState.discountAmount,
       'tax_amount': cartState.taxAmount,
+      'payment_method': cartState.paymentMethod,
       'coupon_code': cartState.appliedCoupon?.code,
       'customer_name': custName.isEmpty ? null : custName,
       'customer_phone': custPhone.isEmpty ? null : custPhone,

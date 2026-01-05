@@ -36,6 +36,13 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> wit
           return const Scaffold(body: Center(child: CircularProgressIndicator()));
         }
 
+        // Initialize outlet filter if user is an outlet manager
+        if (profile.outletId != null) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            ref.read(outletFilterProvider.notifier).setFilter(profile.outletId);
+          });
+        }
+
         return Scaffold(
           appBar: AppBar(
             title: const Text('ADMIN CONSOLE', style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 1.2)),
@@ -90,147 +97,313 @@ class _OverviewTab extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final range = ref.watch(dateRangeProvider);
+    // Pre-fetch outlets to avoid loading delay in picker
+    ref.watch(outletsRepoProvider);
+    
     final statsAsync = ref.watch(filteredSalesProvider);
-    final recentOrdersAsync = ref.watch(recentOrdersProvider);
+    final userProfile = ref.watch(userProfileProvider).value;
+    final isOutletManager = userProfile?.outletId != null;
 
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(16.0),
+      physics: const BouncingScrollPhysics(),
+      padding: const EdgeInsets.all(20.0),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          LayoutBuilder(
-            builder: (context, constraints) {
-              final isMobile = constraints.maxWidth < 600;
-              return Column(
-                children: [
-                   Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text('Performance', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-                      TextButton.icon(
-                        icon: const Icon(Icons.calendar_today, size: 16),
-                        label: Text(range.start.day == range.end.day ? 'Today' : 'Date Range'),
-                        onPressed: () async {
-                          final picked = await showDateRangePicker(
-                            context: context,
-                            firstDate: DateTime(2023),
-                            lastDate: DateTime.now().add(const Duration(days: 1)),
-                            initialDateRange: range,
-                          );
-                          if (picked != null) {
-                            ref.read(dateRangeProvider.notifier).setRange(DateTimeRange(
-                              start: picked.start,
-                              end: DateTime(picked.end.year, picked.end.month, picked.end.day, 23, 59, 59),
-                            ));
-                          }
-                        },
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-                  
-                  statsAsync.when(
-                    data: (stats) => isMobile 
-                      ? Column(
-                          children: [
-                            _StatCard(title: 'Revenue', value: '₹${stats.totalRevenue.toInt()}', icon: Icons.currency_rupee, color: Colors.green),
-                            const SizedBox(height: 12),
-                            Row(
-                              children: [
-                                _StatCard(title: 'Orders', value: stats.totalOrders.toString(), icon: Icons.receipt_long, color: Colors.blue),
-                                const SizedBox(width: 12),
-                                _StatCard(title: 'Avg.', value: '₹${stats.averageOrderValue.toInt()}', icon: Icons.analytics, color: Colors.orange),
-                              ],
-                            ),
-                          ],
-                        )
-                      : Row(
-                          children: [
-                            _StatCard(title: 'Total Revenue', value: '₹${stats.totalRevenue.toStringAsFixed(2)}', icon: Icons.currency_rupee, color: Colors.green),
-                            const SizedBox(width: 16),
-                            _StatCard(title: 'Total Orders', value: stats.totalOrders.toString(), icon: Icons.receipt_long, color: Colors.blue),
-                            const SizedBox(width: 16),
-                            _StatCard(title: 'Avg. Order', value: '₹${stats.averageOrderValue.toStringAsFixed(2)}', icon: Icons.analytics, color: Colors.orange),
-                          ],
-                        ),
-                    loading: () => const LinearProgressIndicator(),
-                    error: (e, st) => Text('Error: $e'),
-                  ),
-                ],
-              );
-            }
+          _PerformanceHeader(isOutletManager: isOutletManager),
+          const SizedBox(height: 24),
+          
+          statsAsync.when(
+            data: (stats) => _StatGrid(stats: stats),
+            loading: () => const _StatGridPlaceholder(),
+            error: (e, st) => Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(color: Colors.red[50], borderRadius: BorderRadius.circular(12)),
+              child: Text('Error: $e', style: const TextStyle(color: Colors.red)),
+            ),
           ),
 
-          const SizedBox(height: 32),
-          const Text('Recent Orders', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 40),
+          const Text('Recent Orders', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: Color(0xFF2D3142))),
           const SizedBox(height: 16),
-
-          recentOrdersAsync.when(
-            data: (orders) => orders.isEmpty 
-              ? const Center(child: Padding(padding: EdgeInsets.all(32), child: Text('No orders found')))
-              : ListView.separated(
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  itemCount: orders.length,
-                  separatorBuilder: (context, index) => const SizedBox(height: 12),
-                  itemBuilder: (context, index) {
-                    final order = orders[index];
-                    final total = order['total_amount'] ?? 0;
-                    final time = DateTime.parse(order['created_at']).toLocal();
-                    final items = order['order_items'] as List? ?? [];
-                    final customerName = order['customer_name'] ?? 'Guest';
-                    final customerPhone = order['customer_phone'] ?? 'No Phone';
-
-                    return Card(
-                      elevation: 0,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: Colors.grey[200]!)),
-                      child: Padding(
-                        padding: const EdgeInsets.all(16.0),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text('Order #${order['id'].toString().substring(0, 8)}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                                    Text('${time.hour}:${time.minute.toString().padLeft(2, '0')} | $customerName', style: TextStyle(color: Colors.grey[600], fontSize: 13)),
-                                  ],
-                                ),
-                                Text('₹$total', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18, color: Color(0xFFE38242))),
-                              ],
-                            ),
-                            if (customerPhone != 'No Phone') Padding(
-                              padding: const EdgeInsets.only(top: 4.0),
-                              child: Text('📞 $customerPhone', style: TextStyle(color: Colors.grey[600], fontSize: 12)),
-                            ),
-                            const Divider(height: 24),
-                            ...items.map((item) {
-                              final menuName = item['menu_items']?['name'] ?? 'Unknown Item';
-                              return Padding(
-                                padding: const EdgeInsets.only(bottom: 4.0),
-                                child: Row(
-                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                  children: [
-                                    Text('${item['quantity']}x $menuName', style: const TextStyle(fontSize: 14)),
-                                    Text('₹${(item['price'] * item['quantity']).toStringAsFixed(0)}', style: TextStyle(color: Colors.grey[600], fontSize: 13)),
-                                  ],
-                                ),
-                              );
-                            }),
-                          ],
-                        ),
-                      ),
-                    );
-                  },
-                ),
-            loading: () => const Center(child: CircularProgressIndicator()),
-            error: (e, st) => Text('Error loading orders: $e'),
-          ),
+          const _RecentOrdersList(),
         ],
+      ),
+    );
+  }
+}
+
+class _PerformanceHeader extends ConsumerWidget {
+  final bool isOutletManager;
+  const _PerformanceHeader({required this.isOutletManager});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final range = ref.watch(dateRangeProvider);
+    final outletId = ref.watch(outletFilterProvider);
+    final paymentMethod = ref.watch(paymentMethodFilterProvider);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Performance Overview', 
+          style: TextStyle(fontSize: 26, fontWeight: FontWeight.w800, color: Color(0xFF2D3142))
+        ),
+        const SizedBox(height: 16),
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(
+            children: [
+              _FilterChip(
+                icon: Icons.calendar_today,
+                label: range.start.day == range.end.day ? 'Today' : 'Custom Range',
+                onTap: () async {
+                  final picked = await showDateRangePicker(
+                    context: context,
+                    firstDate: DateTime(2023),
+                    lastDate: DateTime.now().add(const Duration(days: 1)),
+                    initialDateRange: range,
+                  );
+                  if (picked != null) {
+                    ref.read(dateRangeProvider.notifier).setRange(DateTimeRange(
+                      start: picked.start,
+                      end: DateTime(picked.end.year, picked.end.month, picked.end.day, 23, 59, 59),
+                    ));
+                  }
+                },
+              ),
+              const SizedBox(width: 8),
+              if (!isOutletManager)
+                _FilterChip(
+                  icon: Icons.store,
+                  label: outletId == null ? 'All Outlets' : 'Specific Outlet',
+                  onTap: () => _showOutletPicker(context, ref),
+                ),
+              const SizedBox(width: 8),
+              _FilterChip(
+                icon: Icons.payment,
+                label: paymentMethod == null ? 'All Payments' : paymentMethod.toUpperCase(),
+                onTap: () => _showPaymentPicker(context, ref),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  void _showOutletPicker(BuildContext context, WidgetRef ref) {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (context) => Consumer(
+        builder: (context, ref, child) {
+          final outletsAsync = ref.watch(outletsRepoProvider);
+          return Container(
+            constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.6, minHeight: 200),
+            child: outletsAsync.when(
+              data: (outlets) => ListView(
+                shrinkWrap: true,
+                padding: const EdgeInsets.symmetric(vertical: 20),
+                children: [
+                   const ListTile(title: Text('Select Outlet', style: TextStyle(fontWeight: FontWeight.bold))),
+                   ListTile(
+                     title: const Text('All Outlets'),
+                     onTap: () { ref.read(outletFilterProvider.notifier).setFilter(null); Navigator.pop(context); },
+                   ),
+                   ...outlets.map((o) => ListTile(
+                     title: Text(o['name']),
+                     onTap: () { ref.read(outletFilterProvider.notifier).setFilter(o['id']); Navigator.pop(context); },
+                   )),
+                ],
+              ),
+              loading: () => const SizedBox(
+                height: 200, 
+                child: Center(child: CircularProgressIndicator(color: Colors.orange))
+              ),
+              error: (e, st) => Center(child: Padding(padding: EdgeInsets.all(20), child: Text('Error: $e'))),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  void _showPaymentPicker(BuildContext context, WidgetRef ref) {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (context) => ListView(
+        shrinkWrap: true,
+        padding: const EdgeInsets.symmetric(vertical: 20),
+        children: [
+          const ListTile(title: Text('Select Payment Mode', style: TextStyle(fontWeight: FontWeight.bold))),
+          ListTile(
+            title: const Text('All Payments'),
+            onTap: () { ref.read(paymentMethodFilterProvider.notifier).setFilter(null); Navigator.pop(context); },
+          ),
+          ...['Cash', 'Card', 'UPI'].map((m) => ListTile(
+            title: Text(m),
+            onTap: () { ref.read(paymentMethodFilterProvider.notifier).setFilter(m); Navigator.pop(context); },
+          )),
+        ],
+      ),
+    );
+  }
+}
+
+class _FilterChip extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+
+  const _FilterChip({required this.icon, required this.label, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return ActionChip(
+      avatar: Icon(icon, size: 16, color: Colors.orange),
+      label: Text(label, style: const TextStyle(fontWeight: FontWeight.w600)),
+      onPressed: onTap,
+      backgroundColor: Colors.orange.withValues(alpha: 0.05),
+      side: const BorderSide(color: Colors.orange, width: 0.5),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+    );
+  }
+}
+
+class _StatGrid extends StatelessWidget {
+  final SalesStats stats;
+  const _StatGrid({required this.stats});
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isMobile = constraints.maxWidth < 600;
+        if (isMobile) {
+          return Column(
+            children: [
+              _StatCard(title: 'Revenue', value: '₹${stats.totalRevenue.toInt()}', icon: Icons.currency_rupee, color: Colors.green),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                   Expanded(child: _StatCard(title: 'Orders', value: stats.totalOrders.toString(), icon: Icons.receipt_long, color: Colors.blue)),
+                   const SizedBox(width: 12),
+                   Expanded(child: _StatCard(title: 'Avg. Order', value: '₹${stats.averageOrderValue.toInt()}', icon: Icons.analytics, color: Colors.orange)),
+                ],
+              ),
+            ],
+          );
+        }
+        return Row(
+          children: [
+            Expanded(child: _StatCard(title: 'Total Revenue', value: '₹${stats.totalRevenue.toStringAsFixed(2)}', icon: Icons.currency_rupee, color: Colors.green)),
+            const SizedBox(width: 16),
+            Expanded(child: _StatCard(title: 'Total Orders', value: stats.totalOrders.toString(), icon: Icons.receipt_long, color: Colors.blue)),
+            const SizedBox(width: 16),
+            Expanded(child: _StatCard(title: 'Avg. Order', value: '₹${stats.averageOrderValue.toStringAsFixed(2)}', icon: Icons.analytics, color: Colors.orange)),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _StatGridPlaceholder extends StatelessWidget {
+  const _StatGridPlaceholder();
+  @override
+  Widget build(BuildContext context) {
+    return const SizedBox(
+      height: 100, 
+      child: Center(child: LinearProgressIndicator(color: Colors.orange))
+    );
+  }
+}
+
+class _RecentOrdersList extends ConsumerWidget {
+  const _RecentOrdersList();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final ordersAsync = ref.watch(filteredOrdersProvider);
+
+    return ordersAsync.when(
+      data: (orders) => orders.isEmpty 
+        ? const Center(child: Padding(padding: EdgeInsets.all(32), child: Text('No orders found matching filters')))
+        : ListView.separated(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            itemCount: orders.length,
+            separatorBuilder: (context, index) => const SizedBox(height: 12),
+            itemBuilder: (context, index) => _OrderCard(order: orders[index]),
+          ),
+      loading: () => const SizedBox(height: 200, child: Center(child: CircularProgressIndicator(color: Colors.orange))),
+      error: (e, st) => Text('Error: $e'),
+    );
+  }
+}
+
+class _OrderCard extends StatelessWidget {
+  final Map<String, dynamic> order;
+  const _OrderCard({required this.order});
+
+  @override
+  Widget build(BuildContext context) {
+    final total = order['total_amount'] ?? 0;
+    final time = DateTime.parse(order['created_at']).toLocal();
+    final items = order['order_items'] as List? ?? [];
+    final customerName = order['customer_name'] ?? 'Guest';
+    final paymentMethod = order['payment_method']?.toString().toUpperCase() ?? 'CASH';
+
+    return Card(
+      elevation: 0,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: Colors.grey[200]!)),
+      child: Padding(
+        padding: const EdgeInsets.all(20.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Order #${order['id'].toString().substring(0, 8)}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 17, color: Color(0xFF2D3142))),
+                    Text('${time.hour}:${time.minute.toString().padLeft(2, '0')} | $customerName', style: TextStyle(color: Colors.grey[600], fontSize: 14)),
+                  ],
+                ),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text('₹$total', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 20, color: Color(0xFFE38242))),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                      decoration: BoxDecoration(color: Colors.grey[100], borderRadius: BorderRadius.circular(4)),
+                      child: Text(paymentMethod, style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.grey)),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+            const Divider(height: 32),
+            ...items.map((item) {
+              final menuName = item['menu_items']?['name'] ?? 'Unknown Item';
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 6.0),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text('${item['quantity']}x $menuName', style: const TextStyle(fontSize: 15, color: Color(0xFF4F5D75))),
+                    Text('₹${(item['price'] * item['quantity']).toStringAsFixed(0)}', style: TextStyle(color: Colors.grey[600], fontSize: 14)),
+                  ],
+                ),
+              );
+            }),
+          ],
+        ),
       ),
     );
   }
@@ -251,57 +424,52 @@ class _StatCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Expanded(
-      child: Container(
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(16),
-          boxShadow: [
-            BoxShadow(
-              color: color.withValues(alpha: 0.1),
-              blurRadius: 10,
-              offset: const Offset(0, 4),
-            ),
-          ],
-        ),
-        child: Card(
-          elevation: 0,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          child: Padding(
-            padding: const EdgeInsets.all(20.0),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        color: color.withValues(alpha: 0.1),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Icon(icon, color: color, size: 20),
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: color.withValues(alpha: 0.1),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Card(
+        elevation: 0,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        child: Padding(
+          padding: const EdgeInsets.all(20.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: color.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(8),
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Text(
-                        title, 
-                        style: TextStyle(color: Colors.grey[600], fontWeight: FontWeight.w500),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 16),
-                FittedBox(
-                  fit: BoxFit.scaleDown,
-                  alignment: Alignment.centerLeft,
-                  child: Text(
-                    value,
-                    style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold, color: Colors.blueGrey[900]),
+                    child: Icon(icon, color: color, size: 20),
                   ),
-                ),
-              ],
-            ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      title, 
+                      style: TextStyle(color: Colors.grey[600], fontWeight: FontWeight.w500),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              Text(
+                value,
+                style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.blueGrey[900], letterSpacing: -0.5),
+              ),
+            ],
           ),
         ),
       ),

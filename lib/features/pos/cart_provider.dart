@@ -22,11 +22,13 @@ class CartState {
   final List<CartItem> items;
   final CouponModel? appliedCoupon;
   final double taxRate; // 0.05 for 5%
+  final String paymentMethod; // 'cash', 'card', 'upi'
 
   CartState({
     this.items = const [],
     this.appliedCoupon,
     this.taxRate = 0.0,
+    this.paymentMethod = 'cash',
   });
 
   double get subtotal => items.fold(0, (sum, item) => sum + item.total);
@@ -39,11 +41,13 @@ class CartState {
     CouponModel? appliedCoupon,
     bool clearCoupon = false,
     double? taxRate,
+    String? paymentMethod,
   }) {
     return CartState(
       items: items ?? this.items,
       appliedCoupon: clearCoupon ? null : (appliedCoupon ?? this.appliedCoupon),
       taxRate: taxRate ?? this.taxRate,
+      paymentMethod: paymentMethod ?? this.paymentMethod,
     );
   }
 }
@@ -107,6 +111,10 @@ class CartNotifier extends Notifier<CartState> {
 
   void setTaxRate(double rate) {
     state = state.copyWith(taxRate: rate);
+  }
+
+  void setPaymentMethod(String method) {
+    state = state.copyWith(paymentMethod: method);
   }
 }
 

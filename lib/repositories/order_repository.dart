@@ -34,7 +34,7 @@ class OrderRepository {
       'outlet_id': orderData['outlet_id'],
       'total_amount': orderData['total'],
       'status': 'completed',
-      'payment_method': 'cash',
+      'payment_method': orderData['payment_method'] ?? 'cash',
       'coupon_code': orderData['coupon_code'],
       'discount_amount': orderData['discount_amount'],
       'tax_amount': orderData['tax_amount'] ?? 0,

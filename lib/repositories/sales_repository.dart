@@ -26,18 +26,22 @@ class SalesRepository {
     return getStatsForRange(start, end);
   }
 
-  Future<SalesStats> getStatsForRange(DateTime start, DateTime end) async {
+  Future<SalesStats> getStatsForRange(DateTime start, DateTime end, {String? outletId, String? paymentMethod}) async {
     try {
       if (AppConstants.supabaseUrl.contains('YOUR_SUPABASE_URL')) {
         return SalesStats(totalRevenue: 5400, totalOrders: 12, averageOrderValue: 450);
       }
 
-      final response = await _client
+      var query = _client
           .from('orders')
           .select('total_amount')
           .gte('created_at', start.toIso8601String())
           .lte('created_at', end.toIso8601String());
 
+      if (outletId != null) query = query.eq('outlet_id', outletId);
+      if (paymentMethod != null) query = query.eq('payment_method', paymentMethod.toLowerCase());
+
+      final response = await query;
       final List<dynamic> data = response as List<dynamic>;
 
       if (data.isEmpty) {
@@ -60,7 +64,7 @@ class SalesRepository {
   }
 
 
-  Future<List<Map<String, dynamic>>> getRecentOrders() async {
+  Future<List<Map<String, dynamic>>> getRecentOrders({String? outletId, String? paymentMethod, int limit = 10}) async {
      try {
       if (AppConstants.supabaseUrl.contains('YOUR_SUPABASE_URL')) {
         return [
@@ -75,14 +79,18 @@ class SalesRepository {
         ];
       }
 
-      final response = await _client
+      var query = _client
           .from('orders')
-          .select('*, order_items(*, menu_items(name))')
-          .order('created_at', ascending: false)
-          .limit(10);
+          .select('id, total_amount, status, customer_name, customer_phone, created_at, payment_method, order_items(quantity, price, menu_items(name))');
+
+      if (outletId != null) query = query.eq('outlet_id', outletId);
+      if (paymentMethod != null) query = query.eq('payment_method', paymentMethod.toLowerCase());
+      
+      final response = await query.order('created_at', ascending: false).limit(limit);
       
       return List<Map<String, dynamic>>.from(response as List);
     } catch (e) {
+      debugPrint("Error fetching orders: $e");
       return [];
     }
   }
@@ -94,8 +102,8 @@ final dailySalesProvider = FutureProvider<SalesStats>((ref) async {
   return ref.watch(salesRepositoryProvider).getDailyStats();
 });
 
-final recentOrdersProvider = FutureProvider<List<Map<String, dynamic>>>((ref) async {
-  return ref.watch(salesRepositoryProvider).getRecentOrders();
+final recentOrdersProvider = Provider<AsyncValue<List<Map<String, dynamic>>>>((ref) {
+  return ref.watch(filteredOrdersProvider);
 });
 
 class DateRangeNotifier extends Notifier<DateTimeRange> {
@@ -112,7 +120,34 @@ class DateRangeNotifier extends Notifier<DateTimeRange> {
 
 final dateRangeProvider = NotifierProvider<DateRangeNotifier, DateTimeRange>(DateRangeNotifier.new);
 
+class StringFilterNotifier extends Notifier<String?> {
+  @override
+  String? build() => null;
+  void setFilter(String? val) => state = val;
+}
+
+final outletFilterProvider = NotifierProvider<StringFilterNotifier, String?>(StringFilterNotifier.new);
+final paymentMethodFilterProvider = NotifierProvider<StringFilterNotifier, String?>(StringFilterNotifier.new);
+
 final filteredSalesProvider = FutureProvider<SalesStats>((ref) async {
   final range = ref.watch(dateRangeProvider);
-  return ref.watch(salesRepositoryProvider).getStatsForRange(range.start, range.end);
+  final outletId = ref.watch(outletFilterProvider);
+  final paymentMethod = ref.watch(paymentMethodFilterProvider);
+  
+  return ref.watch(salesRepositoryProvider).getStatsForRange(
+    range.start, 
+    range.end,
+    outletId: outletId,
+    paymentMethod: paymentMethod,
+  );
+});
+
+final filteredOrdersProvider = FutureProvider<List<Map<String, dynamic>>>((ref) async {
+  final outletId = ref.watch(outletFilterProvider);
+  final paymentMethod = ref.watch(paymentMethodFilterProvider);
+  // Note: we could also add date range to recent orders if needed
+  return ref.watch(salesRepositoryProvider).getRecentOrders(
+    outletId: outletId,
+    paymentMethod: paymentMethod,
+  );
 });
