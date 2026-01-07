@@ -64,7 +64,14 @@ class SalesRepository {
   }
 
 
-  Future<List<Map<String, dynamic>>> getRecentOrders({String? outletId, String? paymentMethod, int limit = 10}) async {
+  Future<List<Map<String, dynamic>>> getRecentOrders({
+    String? outletId, 
+    String? paymentMethod, 
+    DateTime? startDate,
+    DateTime? endDate,
+    int offset = 0,
+    int limit = 10,
+  }) async {
      try {
       if (AppConstants.supabaseUrl.contains('YOUR_SUPABASE_URL')) {
         return [
@@ -85,8 +92,12 @@ class SalesRepository {
 
       if (outletId != null) query = query.eq('outlet_id', outletId);
       if (paymentMethod != null) query = query.eq('payment_method', paymentMethod.toLowerCase());
+      if (startDate != null) query = query.gte('created_at', startDate.toIso8601String());
+      if (endDate != null) query = query.lte('created_at', endDate.toIso8601String());
       
-      final response = await query.order('created_at', ascending: false).limit(limit);
+      final response = await query
+          .order('created_at', ascending: false)
+          .range(offset, offset + limit - 1);
       
       return List<Map<String, dynamic>>.from(response as List);
     } catch (e) {
@@ -142,12 +153,66 @@ final filteredSalesProvider = FutureProvider<SalesStats>((ref) async {
   );
 });
 
-final filteredOrdersProvider = FutureProvider<List<Map<String, dynamic>>>((ref) async {
+final allFilteredOrdersProvider = FutureProvider<List<Map<String, dynamic>>>((ref) async {
+  final range = ref.watch(dateRangeProvider);
   final outletId = ref.watch(outletFilterProvider);
   final paymentMethod = ref.watch(paymentMethodFilterProvider);
-  // Note: we could also add date range to recent orders if needed
+
   return ref.watch(salesRepositoryProvider).getRecentOrders(
     outletId: outletId,
     paymentMethod: paymentMethod,
+    startDate: range.start,
+    endDate: range.end,
+    offset: 0,
+    limit: 1000, // Sufficient for export
   );
 });
+
+final filteredOrdersProvider = AsyncNotifierProvider<PaginatedOrdersNotifier, List<Map<String, dynamic>>>(PaginatedOrdersNotifier.new);
+
+class PaginatedOrdersNotifier extends AsyncNotifier<List<Map<String, dynamic>>> {
+  int _currentPage = 0;
+  final int _pageSize = 10;
+  bool _hasMore = true;
+  bool get hasMore => _hasMore;
+
+  @override
+  Future<List<Map<String, dynamic>>> build() async {
+    _currentPage = 0;
+    _hasMore = true;
+    return _fetch();
+  }
+
+  Future<List<Map<String, dynamic>>> _fetch() async {
+    final range = ref.watch(dateRangeProvider);
+    final outletId = ref.watch(outletFilterProvider);
+    final paymentMethod = ref.watch(paymentMethodFilterProvider);
+
+    final orders = await ref.read(salesRepositoryProvider).getRecentOrders(
+      outletId: outletId,
+      paymentMethod: paymentMethod,
+      startDate: range.start,
+      endDate: range.end,
+      offset: _currentPage * _pageSize,
+      limit: _pageSize,
+    );
+
+    if (orders.length < _pageSize) {
+      _hasMore = false;
+    }
+
+    return orders;
+  }
+
+  Future<void> loadMore() async {
+    if (!_hasMore || state.isLoading) return;
+
+    state = const AsyncLoading<List<Map<String, dynamic>>>().copyWithPrevious(state);
+
+    state = await AsyncValue.guard(() async {
+      _currentPage++;
+      final newOrders = await _fetch();
+      return [...state.value ?? [], ...newOrders];
+    });
+  }
+}

@@ -1,12 +1,15 @@
-
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:go_router/go_router.dart';
+import 'package:intl/intl.dart';
+import 'package:csv/csv.dart';
 import '../../repositories/sales_repository.dart';
 import '../../repositories/menu_repository.dart';
 import '../../repositories/user_repository.dart';
 import '../auth/auth_provider.dart';
+import '../../core/file_utils.dart';
+import 'dart:io' show File;
 
 class AdminDashboardScreen extends ConsumerStatefulWidget {
   const AdminDashboardScreen({super.key});
@@ -59,6 +62,7 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> wit
               controller: _tabController,
               indicatorColor: Colors.white,
               indicatorWeight: 4,
+              labelColor: Colors.white,
               labelStyle: const TextStyle(fontWeight: FontWeight.bold),
               tabs: const [
                 Tab(icon: Icon(Icons.dashboard), text: 'Overview'),
@@ -157,7 +161,7 @@ class _PerformanceHeader extends ConsumerWidget {
             children: [
               _FilterChip(
                 icon: Icons.calendar_today,
-                label: range.start.day == range.end.day ? 'Today' : 'Custom Range',
+                label: range.start.day == range.end.day ? 'Today' : '${range.start.day}/${range.start.month} - ${range.end.day}/${range.end.month}',
                 onTap: () async {
                   final picked = await showDateRangePicker(
                     context: context,
@@ -186,9 +190,48 @@ class _PerformanceHeader extends ConsumerWidget {
                 label: paymentMethod == null ? 'All Payments' : paymentMethod.toUpperCase(),
                 onTap: () => _showPaymentPicker(context, ref),
               ),
+              const SizedBox(width: 8),
+              _FilterChip(
+                icon: Icons.download,
+                label: 'Export CSV',
+                onTap: () => _exportToCSV(context, ref),
+              ),
             ],
           ),
         ),
+        if (outletId != null || paymentMethod != null || range.start.day != range.end.day) ...[
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            children: [
+              if (range.start.day != range.end.day)
+                _ActiveFilterHint(
+                  label: 'Range: ${range.start.day}/${range.start.month} - ${range.end.day}/${range.end.month}',
+                  onClear: () {
+                    final now = DateTime.now();
+                    ref.read(dateRangeProvider.notifier).setRange(DateTimeRange(
+                      start: DateTime(now.year, now.month, now.day),
+                      end: DateTime(now.year, now.month, now.day, 23, 59, 59),
+                    ));
+                  },
+                ),
+              if (outletId != null)
+                Consumer(builder: (context, ref, child) {
+                  final outlets = ref.watch(outletsRepoProvider).value ?? [];
+                  final outlet = outlets.firstWhere((o) => o['id'] == outletId, orElse: () => {'name': 'Specific'});
+                  return _ActiveFilterHint(
+                    label: 'Outlet: ${outlet['name']}',
+                    onClear: () => ref.read(outletFilterProvider.notifier).setFilter(null),
+                  );
+                }),
+              if (paymentMethod != null)
+                _ActiveFilterHint(
+                  label: 'Mode: ${paymentMethod.toUpperCase()}',
+                  onClear: () => ref.read(paymentMethodFilterProvider.notifier).setFilter(null),
+                ),
+            ],
+          ),
+        ],
       ],
     );
   }
@@ -249,6 +292,86 @@ class _PerformanceHeader extends ConsumerWidget {
           )),
         ],
       ),
+    );
+  }
+
+  Future<void> _exportToCSV(BuildContext context, WidgetRef ref) async {
+    try {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Generating CSV...')));
+      }
+      
+      final orders = await ref.read(allFilteredOrdersProvider.future);
+      if (orders.isEmpty) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No orders to export')));
+        }
+        return;
+      }
+
+      final List<List<dynamic>> rows = [];
+      // Header
+      rows.add([
+        'Order ID',
+        'Date',
+        'Time',
+        'Customer',
+        'Payment Mode',
+        'Items',
+        'Total Amount',
+        'Status'
+      ]);
+
+      for (var order in orders) {
+        final time = DateTime.parse(order['created_at']).toLocal();
+        final itemsList = order['order_items'] as List? ?? [];
+        final itemsString = itemsList.map((i) => "${i['menu_items']?['name'] ?? 'Item'} (x${i['quantity']})").join(", ");
+        
+        rows.add([
+          order['id'].toString().substring(0, 8),
+          DateFormat('dd/MM/yyyy').format(time),
+          DateFormat('HH:mm').format(time),
+          order['customer_name'] ?? 'Guest',
+          order['payment_method']?.toString().toUpperCase() ?? 'CASH',
+          itemsString,
+          order['total_amount'],
+          order['status']
+        ]);
+      }
+
+      final csvData = const ListToCsvConverter().convert(rows);
+      final fileName = "orders_export_${DateFormat('yyyyMMdd_HHmm').format(DateTime.now())}.csv";
+
+      await saveAndShareFile(csvData, fileName);
+
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Exported: $fileName')));
+      }
+    } catch (e) {
+      debugPrint("Export error: $e");
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Export failed: $e')));
+      }
+    }
+  }
+}
+
+class _ActiveFilterHint extends StatelessWidget {
+  final String label;
+  final VoidCallback onClear;
+
+  const _ActiveFilterHint({required this.label, required this.onClear});
+
+  @override
+  Widget build(BuildContext context) {
+    return Chip(
+      label: Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500)),
+      deleteIcon: const Icon(Icons.close, size: 14),
+      onDeleted: onClear,
+      backgroundColor: Colors.grey[200],
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      padding: EdgeInsets.zero,
+      labelPadding: const EdgeInsets.symmetric(horizontal: 8),
     );
   }
 }
@@ -330,15 +453,29 @@ class _RecentOrdersList extends ConsumerWidget {
     final ordersAsync = ref.watch(filteredOrdersProvider);
 
     return ordersAsync.when(
-      data: (orders) => orders.isEmpty 
-        ? const Center(child: Padding(padding: EdgeInsets.all(32), child: Text('No orders found matching filters')))
-        : ListView.separated(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            itemCount: orders.length,
-            separatorBuilder: (context, index) => const SizedBox(height: 12),
-            itemBuilder: (context, index) => _OrderCard(order: orders[index]),
-          ),
+      data: (orders) => Column(
+        children: [
+          orders.isEmpty 
+            ? const Center(child: Padding(padding: EdgeInsets.all(32), child: Text('No orders found matching filters')))
+            : ListView.separated(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: orders.length,
+                separatorBuilder: (context, index) => const SizedBox(height: 12),
+                itemBuilder: (context, index) => _OrderCard(order: orders[index]),
+              ),
+          if (orders.isNotEmpty && ref.read(filteredOrdersProvider.notifier).hasMore)
+            Padding(
+              padding: const EdgeInsets.only(top: 20),
+              child: TextButton.icon(
+                onPressed: () => ref.read(filteredOrdersProvider.notifier).loadMore(),
+                icon: const Icon(Icons.refresh),
+                label: const Text('Load More Orders'),
+                style: TextButton.styleFrom(foregroundColor: Colors.orange),
+              ),
+            ),
+        ],
+      ),
       loading: () => const SizedBox(height: 200, child: Center(child: CircularProgressIndicator(color: Colors.orange))),
       error: (e, st) => Text('Error: $e'),
     );
@@ -355,6 +492,7 @@ class _OrderCard extends StatelessWidget {
     final time = DateTime.parse(order['created_at']).toLocal();
     final items = order['order_items'] as List? ?? [];
     final customerName = order['customer_name'] ?? 'Guest';
+    final customerPhone = order['customer_phone'] ?? '';
     final paymentMethod = order['payment_method']?.toString().toUpperCase() ?? 'CASH';
 
     return Card(
@@ -372,7 +510,8 @@ class _OrderCard extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text('Order #${order['id'].toString().substring(0, 8)}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 17, color: Color(0xFF2D3142))),
-                    Text('${time.hour}:${time.minute.toString().padLeft(2, '0')} | $customerName', style: TextStyle(color: Colors.grey[600], fontSize: 14)),
+                    Text('${time.day.toString().padLeft(2, '0')}/${time.month.toString().padLeft(2, '0')} ${time.hour}:${time.minute.toString().padLeft(2, '0')} | $customerName', style: TextStyle(color: Colors.grey[600], fontSize: 14)),
+                    if (customerPhone.isNotEmpty) Text('📞 $customerPhone', style: TextStyle(color: Colors.grey[500], fontSize: 13)),
                   ],
                 ),
                 Column(
